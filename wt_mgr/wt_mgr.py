@@ -12,6 +12,9 @@ from tabulate import tabulate
 import constants
 
 logger = logging.getLogger(__name__)
+logging.basicConfig()
+
+logger.warning("Starting")
 
 # init WT API connection
 api = WebexTeamsAPI()
@@ -114,7 +117,7 @@ def map_users_to_teams(teams_users_df):
     for _, account in teams_users_df.iterrows():
         team = teams_by_name.get(account.team_name)
         if team:
-            add_mail_to_team(account.mail_addr, team, account.is_moderator)
+            add_mail_to_team(account.member_mail, team, account.is_moderator)
     return
 
 
@@ -127,58 +130,68 @@ def add_mail_to_team(mail, team, is_moderator=False):
         print(f"Error: {e}")
     return
 
-## old stuff below - review please
-def get_teams_membership(teams_list, filter=False):
+
+def get_teams_membership(teams_df):
     memberships = []
-    for team in teams_list:
-        try:
-            members = api.team_memberships.list(teamId=team.id)
-            for member in members:
-                entry = {
-                    "team_name": team.name,
-                    "member_name": member.personDisplayName,
-                    "member_mail": member.personEmail
-                }
-                memberships.append(entry)
-        except ApiError as e:
-            # print(f"Error: {e}")
-            pass
+    teams_set = teams_df.team_name.unique()
+    for team_name in teams_set:
+        team = teams_by_name.get(team_name)
+        if team:
+            try:
+                members = api.team_memberships.list(teamId=team.id)
+                for member in members:
+                    entry = {
+                        "team_name": team.name,
+                        "member_mail": member.personEmail,
+                        "member_name": member.personDisplayName,
+                        "is_active": True,
+                        "is_moderator": member.isModerator
+                    }
+                    memberships.append(entry)
+            except ApiError as e:
+                # print(f"Error: {e}")
+                pass
 
-    if filter:
-        memberships = [ 
-            m for m in memberships if 
-            (
-                "eurl" not in m.get("member_mail") 
-                and "aurigatech.it" not in m.get("member_mail")
-                and "ccepdemo.com" not in m.get("member_mail")
-                ) 
-            ]
-    return memberships
+    memberships_df = pd.DataFrame(memberships)
+
+    return memberships_df
 
 
-def add_eurl_to_rooms(rooms_list):
-    for room in rooms_list:
-        room_name = room.title
-        pprint(f"Adding {constants.EURL_BOT_MAIL} to room: {room_name}")
-        try:
-            api.memberships.create(room.id, personEmail=constants.EURL_BOT_MAIL, isModerator=True)
-        except ApiError as e:
-            print(f"Error: {e}")
+def dump_teams_membership(df, out_path, backup=True):
+    if backup and os.path.isfile(out_path):
+        backup_path = f"{out_path}.bak"
+        os.rename(out_path, backup_path)
+    df.to_csv(out_path, index=False)
+    return
 
 
-def config_rooms_eurl(rooms_list):
-    for room in rooms_list:
-        room_name = room.title
-        messages = [
-            "list off",
-            "internal off",
-            "url"
-        ]
+def add_eurl_to_rooms(rooms_df):
+    for room in rooms_df.iterrows():
+        room_name = room.room_name
+        team_name = room.team_name
+        print(f"Adding {constants.EURL_BOT_MAIL} to room: {room_name}")
+        # try:
+        #     api.memberships.create(room.id, personEmail=constants.EURL_BOT_MAIL, isModerator=True)
+        # except ApiError as e:
+        #     print(f"Error: {e}")
 
-        for msg in messages:
-            pprint(f"Sending '{msg}' to room: {room_name}")
+        for cmd in cmds:
+            print(f"Sending '{cmd}' to room: {room_name}")
             try:
                 api.messages.create(room.id, markdown=f"<@personId:{constants.EURL_BOT_ID}|EURL> {msg}")
+            except ApiError as e:
+                print(f"Error: {e}")
+
+## old stuff below - review please
+
+def config_room_eurl(room, cmds=["list off", "internal off", "url"]):
+        room_name = room.room_name
+        team_name = room.team_name
+
+        for cmd in cmds:
+            print(f"Sending '{cmd}' to room: {room_name} in {team_name}")
+            try:
+                api.messages.create(roomid, markdown=f"<@personId:{constants.EURL_BOT_ID}|EURL> {msg}")
             except ApiError as e:
                 print(f"Error: {e}")
 
@@ -250,6 +263,8 @@ async def main():
     parser.add_argument("-rd", "--delete-rooms", action="store_true")
     parser.add_argument("-ua", "--assign-users", action="store_true")
     parser.add_argument("-ur", "--remove-users", action="store_true")
+    parser.add_argument("-gm", "--get-members", action="store_true")
+    parser.add_argument("-dm", "--dump-members", action="store_true")
 
     # options
     parser.add_argument("-ia", "--include-active", action="store_true")
@@ -278,6 +293,8 @@ async def main():
     if teams_file_path:
         teams_df = pd.read_csv(teams_file_path)
         teams_df.is_active.fillna(value=False, inplace=True)
+        teams_df.team_id.fillna(value="", inplace=True)
+        teams_df.team_description.fillna(value="", inplace=True)
 
         teams_df = filter_df(teams_df, options)
 
@@ -302,6 +319,9 @@ async def main():
         rooms_df = pd.read_csv(rooms_file_path)
         rooms_df.team_name.fillna(value=teams_set_str, inplace=True)
         rooms_df.is_active.fillna(value=False, inplace=True)
+        rooms_df.room_id.fillna(value="", inplace=True)
+        rooms_df.team_id.fillna(value="", inplace=True)
+    
         # the "team_name" can be a list of team names
         rooms_df.team_name = rooms_df.team_name.str.split(",")
         rooms_df = rooms_df.explode("team_name")
@@ -327,7 +347,8 @@ async def main():
     if teams_users_file_path:
         teams_users_df = pd.read_csv(teams_users_file_path)
         teams_users_df.team_name.fillna(value="", inplace=True)
-        teams_users_df.mail_addr.fillna(value="", inplace=True)
+        teams_users_df.member_mail.fillna(value="", inplace=True)
+        teams_users_df.member_name.fillna(value="", inplace=True)
         teams_users_df.is_active.fillna(value=False, inplace=True)
         teams_users_df.is_moderator.fillna(value=False, inplace=True)
 
@@ -338,13 +359,17 @@ async def main():
         if options.assign_users:
             map_users_to_teams(teams_users_df)
 
+    # Memberships
+    if options.get_members or options.dump_members:
+        members_df = get_teams_membership(teams_df)
+
+        if options.dump_members:
+            dump_teams_membership(members_df, teams_users_file_path)
+
     #await clean_msgs_rooms(rooms)
     
     # url_maps = await get_room_to_url_map(rooms)
     # print(tabulate(sorted(url_maps, key = lambda i: i["room"]), headers="keys"))
-
-    # member_map = get_teams_membership(all_teams, filter=True)
-    # print(tabulate(member_map, headers="keys"))
 
     return
         
