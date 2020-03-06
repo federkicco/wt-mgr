@@ -22,18 +22,24 @@ teams_by_name = { team.name: team for team in all_teams }
 all_rooms = [ room for room in api.rooms.list() ]
 
 
-def create_teams(teams_df, include_inactive=False):
+def filter_df(df, options):
+    if options.only_inactive:
+        df = df[df.is_active == False]
+        what = "only inactive"
+    elif not options.include_inactive:
+        df = df[df.is_active == True]
+        what = "only active"
+    else:
+        what = "all"
+
+    print(f"Processing {what} elements from config.")
+    return df
+
+
+def create_teams(teams_df):
     """
     Process the teams DF and create Teams if not yet existing.
     """
-    if not include_inactive:
-        teams_df = teams_df[teams_df.is_active == True]
-        what_teams = "active"
-    else:
-        what_teams = "all"
-
-    print(f"Create {what_teams} teams from config.")
-
     teams_set = teams_df.team_name.unique()
 
     for team_name in teams_set:
@@ -52,25 +58,19 @@ def create_team(team_name):
             print(f"Error deleting team {team_name}: {e}")
     else:
         print(f"Team '{team_name}' already exists.")
+    return
 
 
-def delete_teams(teams_df, include_active=False):
+def delete_teams(teams_df):
     """
     Read the input DF file and delete Teams.
-    """
-    if not include_active:
-        teams_df = teams_df[teams_df.is_active == False]
-        what_teams = "inactive"
-    else:
-        what_teams = "all"
-
-    print(f"Deleting {what_teams} teams..")
-    
+    """    
     teams_set = teams_df.team_name.unique()
 
     for team_name in teams_set:
         print(f"Deleting team '{team_name}'")
         delete_team(team_name)
+    return
 
 
 def delete_team(team_name):
@@ -84,41 +84,34 @@ def delete_team(team_name):
         print(f"Team {team_name} not found.")
 
 
-def create_rooms(rooms_df, include_inactive=False):
+def create_rooms(rooms_df):
     """
     Process the rooms DF and create Rooms if not yet existing.
     """
-    if not include_inactive:
-        rooms_df = rooms_df[rooms_df.is_active == True]
-        what_rooms = "active"
-    else:
-        what_rooms = "all"
-
-    print(f"Create {what_rooms} rooms from config.")
-
-    # for team_name in teams_set:
-    #     print(f"Creating team '{team_name}'")
-    #     create_team(team_name)
-
+    for _, room in rooms_df.iterrows():
+        room_name = room.room_name
+        team_name = room.team_name
+        print(f"Creating room '{room_name}' in '{team_name}'")
+        create_room(room_name, team_name)
     return
 
       
 def create_room(room_name, team_name):
-    team_id = teams_by_name.get(team_name)
-    try:
-        api.rooms.create(room_name, team_id)
-    except ApiError as e:
-        print(f"Error creatint room {room_name}: {e}")
-    else:
-        print(f"Room '{room_name}' already exists.")
+    team = teams_by_name.get(team_name)
+    if team:
+        try:
+            api.rooms.create(room_name, team.id)
+        except ApiError as e:
+            print(f"Error creating room {room_name}: {e}")
+        else:
+            print(f"Room '{room_name}' already exists.")
 
 
 def map_users_to_teams(teams_users_df):
     """
     Map users to teams
     """
-    teams_users_df = teams_users_df[teams_users_df.is_active]
-    for _, account in active_mail_df.iterrows():
+    for _, account in teams_users_df.iterrows():
         team = teams_by_name.get(account.team_name)
         if team:
             add_mail_to_team(account.mail_addr, team, account.is_moderator)
@@ -161,12 +154,6 @@ def get_teams_membership(teams_list, filter=False):
                 ) 
             ]
     return memberships
-
-
-def add_mail_to_teams(mail, teams_list, is_moderator=False):
-    for team in teams_list:
-        add_mail_to_team(mail, team, is_moderator)
-    return
 
 
 def add_eurl_to_rooms(rooms_list):
@@ -261,10 +248,13 @@ async def main():
     parser.add_argument("-td", "--delete-teams", action="store_true")
     parser.add_argument("-rc", "--create-rooms", action="store_true")
     parser.add_argument("-rd", "--delete-rooms", action="store_true")
+    parser.add_argument("-ua", "--assign-users", action="store_true")
+    parser.add_argument("-ur", "--remove-users", action="store_true")
 
     # options
     parser.add_argument("-ia", "--include-active", action="store_true")
     parser.add_argument("-ii", "--include-inactive", action="store_true")
+    parser.add_argument("-oi", "--only-inactive", action="store_true")
 
     # filters
     parser.add_argument("--team-filter")
@@ -289,41 +279,34 @@ async def main():
         teams_df = pd.read_csv(teams_file_path)
         teams_df.is_active.fillna(value=False, inplace=True)
 
+        teams_df = filter_df(teams_df, options)
+
         if options.team_filter:
             t_filter = "|".join(options.team_filter.split(","))
             teams_df = teams_df[teams_df.team_name.str.contains(t_filter)]
         
-        print("Teams config")
         print(teams_df)
+
+        teams_set = pd.Series(teams_df.team_name.unique()).to_list()
+        teams_set_str = ",".join(teams_set)
     
         if options.create_teams:
             logging.info("Creating Teams")
-            create_teams(teams_df, options.include_inactive)
+            create_teams(teams_df)
 
         if options.delete_teams:
-            delete_teams(teams_df, options.include_active)
+            delete_teams(teams_df)
     
     # Rooms
     if rooms_file_path:
         rooms_df = pd.read_csv(rooms_file_path)
-
+        rooms_df.team_name.fillna(value=teams_set_str, inplace=True)
         rooms_df.is_active.fillna(value=False, inplace=True)
         # the "team_name" can be a list of team names
-        rooms_df.team_name.fillna(value="", inplace=True)
-        rooms_df["team_name"] = rooms_df.team_name.str.split(",")  # (lambda x: x.split(","))
+        rooms_df.team_name = rooms_df.team_name.str.split(",")
+        rooms_df = rooms_df.explode("team_name")
 
-        teams_set = teams_df.team_name.unique()
-        print(teams_set)
-
-        rooms_df["team_name"].apply(lambda x: teams_set if len(x)==0 else x)
-  
-        # rooms_df.team_name.replace([], np.nan, inplace=True)
-        # rooms_df.team_name.fillna(value=teams_set, inplace=True)
-
-        # expand rooms with no team associated, to include all teams
-        # 
-
-        # rooms_df = rooms_df.explode("team_name")
+        rooms_df = filter_df(rooms_df, options)
 
         if options.team_filter:
             t_filter = "|".join(options.team_filter.split(","))
@@ -338,20 +321,27 @@ async def main():
     
         if options.create_rooms:
             logging.info("Creating Rooms")
-            create_rooms()
+            create_rooms(rooms_df)
 
-        # teams_df.is_moderator.fillna(value=False, inplace=True)
-        # teams_df.mail_addr.fillna(value="", inplace=True)
-        # if options.mail_filter:
-        #     m_filter = "|".join(options.mail_filter.split(","))
-        #     teams_df = teams_df[teams_df.mail_addr.str.contains(m_filter)]
+    # Teams users
+    if teams_users_file_path:
+        teams_users_df = pd.read_csv(teams_users_file_path)
+        teams_users_df.team_name.fillna(value="", inplace=True)
+        teams_users_df.mail_addr.fillna(value="", inplace=True)
+        teams_users_df.is_active.fillna(value=False, inplace=True)
+        teams_users_df.is_moderator.fillna(value=False, inplace=True)
+
+        teams_users_df = filter_df(teams_users_df, options)
+
+        print(teams_users_df)
+
+        if options.assign_users:
+            map_users_to_teams(teams_users_df)
 
     #await clean_msgs_rooms(rooms)
     
     # url_maps = await get_room_to_url_map(rooms)
     # print(tabulate(sorted(url_maps, key = lambda i: i["room"]), headers="keys"))
-
-    # create_teams(MAIL_CSV_PATH, mail_filter="liceo")
 
     # member_map = get_teams_membership(all_teams, filter=True)
     # print(tabulate(member_map, headers="keys"))
