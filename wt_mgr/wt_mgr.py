@@ -1,69 +1,48 @@
+import logging
+import argparse
+import pandas as pd
+import numpy as np
+import re
+import os
+import asyncio
 from webexteamssdk import WebexTeamsAPI
 from webexteamssdk.exceptions import ApiError
 from distutils.util import strtobool
-import pandas as pd
-from pprint import pprint
-import argparse
-import re
-import asyncio
 from tabulate import tabulate
-import csv
 import constants
 
-import logging
+logger = logging.getLogger(__name__)
 
-
+# init WT API connection
 api = WebexTeamsAPI()
-
+# pull all known teams and rooms
 all_teams = [ team for team in api.teams.list()]
 teams_by_id = { team.id: team.name for team in all_teams }
 teams_by_name = { team.name: team for team in all_teams }
 all_rooms = [ room for room in api.rooms.list() ]
 
 
-def create_teams(teams_df, add_mail=True, team_filter=None):
+def create_teams(teams_df, include_inactive=False):
     """
-    Process the input DF file and create Teams if not yet existing.
+    Process the teams DF and create Teams if not yet existing.
     """
+    if not include_inactive:
+        teams_df = teams_df[teams_df.is_active == True]
+        what_teams = "active"
+    else:
+        what_teams = "all"
+
+    print(f"Create {what_teams} teams from config.")
+
     teams_set = teams_df.team_name.unique()
 
     for team_name in teams_set:
-        print(f"Processing team '{team_name}'")
+        print(f"Creating team '{team_name}'")
         create_team(team_name)
 
-    if add_mail:
-        active_mail_df = teams_df[teams_df.is_active == True]
-        print(active_mail_df)
+    return
 
-
-    # for row in csv_out:
-    #     entry = dict(zip(csv_header, row))
-    #     team_name = entry.get(constants.TEAM_NAME_FIELD)
-    #     team_descr = entry.get(constants.TEAM_DESCR_FIELD)
-
-    #     # skip team if not in filter
-    #     if team_filter and constants.TEAM_NAME_FIELD not in team_name:
-    #         logging.debug(f"Filter: Skipping team {team_name}")
-    #         continue
-
- 
-    #     # if mail_addr and is_active, add mail
-    #     if add_mail:
-    #         try:
-    #             mail_addr = entry.get(constants.MAIL_ADDR_FIELD)
-    #             is_moderator = strtobool(entry.get(constants.MODERATOR_FIELD))
-    #             is_active = strtobool(entry.get(constants.ACTIVE_FIELD))
-
-    #             if constants.MAIL_ADDR_FIELD and is_active:
-    #                 add_mail_to_team(
-    #                     team, 
-    #                     mail_addr, 
-    #                     is_moderator=is_moderator
-    #                     )
-    #         except ApiError as e:
-    #             print(f"Error: {e}")
-    #             continue           
-
+      
 def create_team(team_name):
     team = teams_by_name.get(team_name)
     if not team:
@@ -75,14 +54,22 @@ def create_team(team_name):
         print(f"Team '{team_name}' already exists.")
 
 
-def delete_teams(teams_df, team_filter=None):
+def delete_teams(teams_df, include_active=False):
     """
     Read the input DF file and delete Teams.
     """
+    if not include_active:
+        teams_df = teams_df[teams_df.is_active == False]
+        what_teams = "inactive"
+    else:
+        what_teams = "all"
+
+    print(f"Deleting {what_teams} teams..")
+    
     teams_set = teams_df.team_name.unique()
 
     for team_name in teams_set:
-        print(f"Processing team '{team_name}'")
+        print(f"Deleting team '{team_name}'")
         delete_team(team_name)
 
 
@@ -97,6 +84,57 @@ def delete_team(team_name):
         print(f"Team {team_name} not found.")
 
 
+def create_rooms(rooms_df, include_inactive=False):
+    """
+    Process the rooms DF and create Rooms if not yet existing.
+    """
+    if not include_inactive:
+        rooms_df = rooms_df[rooms_df.is_active == True]
+        what_rooms = "active"
+    else:
+        what_rooms = "all"
+
+    print(f"Create {what_rooms} rooms from config.")
+
+    # for team_name in teams_set:
+    #     print(f"Creating team '{team_name}'")
+    #     create_team(team_name)
+
+    return
+
+      
+def create_room(room_name, team_name):
+    team_id = teams_by_name.get(team_name)
+    try:
+        api.rooms.create(room_name, team_id)
+    except ApiError as e:
+        print(f"Error creatint room {room_name}: {e}")
+    else:
+        print(f"Room '{room_name}' already exists.")
+
+
+def map_users_to_teams(teams_users_df):
+    """
+    Map users to teams
+    """
+    teams_users_df = teams_users_df[teams_users_df.is_active]
+    for _, account in active_mail_df.iterrows():
+        team = teams_by_name.get(account.team_name)
+        if team:
+            add_mail_to_team(account.mail_addr, team, account.is_moderator)
+    return
+
+
+def add_mail_to_team(mail, team, is_moderator=False):
+    team_name = team.name
+    print(f"Adding {mail} to team: {team_name}{' as moderator' if is_moderator else ''}")
+    try:
+        api.team_memberships.create(team.id, personEmail=mail, isModerator=is_moderator)
+    except ApiError as e:
+        print(f"Error: {e}")
+    return
+
+## old stuff below - review please
 def get_teams_membership(teams_list, filter=False):
     memberships = []
     for team in teams_list:
@@ -123,15 +161,6 @@ def get_teams_membership(teams_list, filter=False):
                 ) 
             ]
     return memberships
-
-
-def add_mail_to_team(mail, team, is_moderator=False):
-    team_name = team.name
-    pprint(f"Adding {mail} to team: {team_name}{' as moderator' if is_moderator else ''}")
-    try:
-        api.team_memberships.create(team.id, personEmail=mail, isModerator=is_moderator)
-    except ApiError as e:
-        print(f"Error: {e}")
 
 
 def add_mail_to_teams(mail, teams_list, is_moderator=False):
@@ -221,22 +250,101 @@ async def get_room_to_url_map(rooms_list):
 
 async def main():
     parser = argparse.ArgumentParser()
+    # paths and input files
+    parser.add_argument("-wd", "--work-dir", required=True)
     parser.add_argument("-tf", "--teams-file")
-    parser.add_argument("-ct", "--create-teams", action="store_true")
-    parser.add_argument("-dt", "--delete-teams", action="store_true")
-    parser.add_argument("-se", "--skip-email", action="store_false")
+    parser.add_argument("-rf", "--rooms-file")
+    parser.add_argument("-tu", "--teams-users-file")
+
+    # actions
+    parser.add_argument("-tc", "--create-teams", action="store_true")
+    parser.add_argument("-td", "--delete-teams", action="store_true")
+    parser.add_argument("-rc", "--create-rooms", action="store_true")
+    parser.add_argument("-rd", "--delete-rooms", action="store_true")
+
+    # options
+    parser.add_argument("-ia", "--include-active", action="store_true")
+    parser.add_argument("-ii", "--include-inactive", action="store_true")
+
+    # filters
     parser.add_argument("--team-filter")
+    parser.add_argument("--room-filter")
+    parser.add_argument("--mail-filter")
     options = parser.parse_args()
 
-    if options.teams_file:
-        teams_df = pd.read_csv(options.teams_file) 
+    # process the data dir and input config files
+    work_dir_override = options.work_dir and os.path.isdir(options.work_dir)
+    # teams
+    teams_dir, teams_file = os.path.split(options.teams_file or constants.FNAME_TEAMS)
+    teams_file_path = os.path.join(options.work_dir if work_dir_override else teams_dir, teams_file)
+    # rooms
+    rooms_dir, rooms_file = os.path.split(options.rooms_file or constants.FNAME_ROOMS)
+    rooms_file_path = os.path.join(options.work_dir if work_dir_override else teams_dir, rooms_file)
+    # teams_users
+    teams_users_dir, teams_users_file = os.path.split(options.teams_users_file or constants.FNAME_TEAMS_USERS)
+    teams_users_file_path = os.path.join(options.work_dir if work_dir_override else teams_dir, teams_users_file)
+
+    # Teams
+    if teams_file_path:
+        teams_df = pd.read_csv(teams_file_path)
+        teams_df.is_active.fillna(value=False, inplace=True)
+
+        if options.team_filter:
+            t_filter = "|".join(options.team_filter.split(","))
+            teams_df = teams_df[teams_df.team_name.str.contains(t_filter)]
+        
+        print("Teams config")
+        print(teams_df)
     
         if options.create_teams:
             logging.info("Creating Teams")
-            create_teams(teams_df, options.skip_email, options.team_filter)
+            create_teams(teams_df, options.include_inactive)
 
         if options.delete_teams:
-            delete_teams(teams_df)
+            delete_teams(teams_df, options.include_active)
+    
+    # Rooms
+    if rooms_file_path:
+        rooms_df = pd.read_csv(rooms_file_path)
+
+        rooms_df.is_active.fillna(value=False, inplace=True)
+        # the "team_name" can be a list of team names
+        rooms_df.team_name.fillna(value="", inplace=True)
+        rooms_df["team_name"] = rooms_df.team_name.str.split(",")  # (lambda x: x.split(","))
+
+        teams_set = teams_df.team_name.unique()
+        print(teams_set)
+
+        rooms_df["team_name"].apply(lambda x: teams_set if len(x)==0 else x)
+  
+        # rooms_df.team_name.replace([], np.nan, inplace=True)
+        # rooms_df.team_name.fillna(value=teams_set, inplace=True)
+
+        # expand rooms with no team associated, to include all teams
+        # 
+
+        # rooms_df = rooms_df.explode("team_name")
+
+        if options.team_filter:
+            t_filter = "|".join(options.team_filter.split(","))
+            rooms_df = rooms_df[rooms_df.team_name.str.contains(t_filter)]
+        
+        if options.room_filter:
+            r_filter = "|".join(options.room_filter.split(","))
+            rooms_df = rooms_df[rooms_df.room_name.str.contains(m_filter)]
+
+        print("Rooms config")
+        print(rooms_df)
+    
+        if options.create_rooms:
+            logging.info("Creating Rooms")
+            create_rooms()
+
+        # teams_df.is_moderator.fillna(value=False, inplace=True)
+        # teams_df.mail_addr.fillna(value="", inplace=True)
+        # if options.mail_filter:
+        #     m_filter = "|".join(options.mail_filter.split(","))
+        #     teams_df = teams_df[teams_df.mail_addr.str.contains(m_filter)]
 
     #await clean_msgs_rooms(rooms)
     
