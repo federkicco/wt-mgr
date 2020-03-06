@@ -1,6 +1,7 @@
 from webexteamssdk import WebexTeamsAPI
 from webexteamssdk.exceptions import ApiError
 from distutils.util import strtobool
+import pandas as pd
 from pprint import pprint
 import argparse
 import re
@@ -20,51 +21,69 @@ teams_by_name = { team.name: team for team in all_teams }
 all_rooms = [ room for room in api.rooms.list() ]
 
 
-def create_teams(in_csv, add_mail=True, team_filter=None):
-    with open(in_csv) as csv_f:
-        csv_out = csv.reader(csv_f, delimiter=",")
-        csv_header = next(csv_out)
+def create_teams(teams_df, add_mail=True, team_filter=None):
+    """
+    Process the input DF file and create Teams if not yet existing.
+    """
+    teams_set = teams_df.team_name.unique()
 
-        for row in csv_out:
-            entry = dict(zip(csv_header, row))
-            team_name = entry.get(constants.TEAM_NAME_FIELD)
-            team_descr = entry.get(constants.TEAM_DESCR_FIELD)
+    for team_name in teams_set:
+        print(f"Processing team '{team_name}'")
+        create_team(team_name)
 
-            # skip team if not in filter
-            if team_filter and constants.TEAM_NAME_FIELD not in team_name:
-                logging.debug(f"Filter: Skipping team {team_name}")
-                continue
+    if add_mail:
+        active_mail_df = teams_df[teams_df.is_active == True]
+        print(active_mail_df)
 
-            # check if the team exists
-            current_team = teams_by_name.get(team_name)
-            # if it doesn't exist, create new
-            if not current_team:
-                logging.info(f"Creating {team_name}")
-                try:
-                    team = api.teams.create(team_name, description=team_descr)
-                except ApiError as e:
-                    print(f"Error: {e}")
-                    continue
-            else:
-                team = teams_by_name.get(team_name)
-                logging.info(f"Team {team_name} already exists: {team}")
 
-            # if mail_addr and is_active, add mail
-            if add_mail:
-                try:
-                    mail_addr = entry.get(constants.MAIL_ADDR_FIELD)
-                    is_moderator = strtobool(entry.get(constants.MODERATOR_FIELD))
-                    is_active = strtobool(entry.get(constants.ACTIVE_FIELD))
+    # for row in csv_out:
+    #     entry = dict(zip(csv_header, row))
+    #     team_name = entry.get(constants.TEAM_NAME_FIELD)
+    #     team_descr = entry.get(constants.TEAM_DESCR_FIELD)
 
-                    if constants.MAIL_ADDR_FIELD and is_active:
-                        add_mail_to_team(
-                            team, 
-                            mail_addr, 
-                            is_moderator=is_moderator
-                            )
-                except ApiError as e:
-                    print(f"Error: {e}")
-                    continue           
+    #     # skip team if not in filter
+    #     if team_filter and constants.TEAM_NAME_FIELD not in team_name:
+    #         logging.debug(f"Filter: Skipping team {team_name}")
+    #         continue
+
+ 
+    #     # if mail_addr and is_active, add mail
+    #     if add_mail:
+    #         try:
+    #             mail_addr = entry.get(constants.MAIL_ADDR_FIELD)
+    #             is_moderator = strtobool(entry.get(constants.MODERATOR_FIELD))
+    #             is_active = strtobool(entry.get(constants.ACTIVE_FIELD))
+
+    #             if constants.MAIL_ADDR_FIELD and is_active:
+    #                 add_mail_to_team(
+    #                     team, 
+    #                     mail_addr, 
+    #                     is_moderator=is_moderator
+    #                     )
+    #         except ApiError as e:
+    #             print(f"Error: {e}")
+    #             continue           
+
+def create_team(team_name):
+    team = teams_by_name.get(team_name)
+    if not team:
+        try:
+            api.teams.create(team_name)
+        except ApiError as e:
+            print(f"Error deleting team {team_name}: {e}")
+    else:
+        print(f"Team '{team_name}' already exists.")
+
+
+def delete_teams(teams_df, team_filter=None):
+    """
+    Read the input DF file and delete Teams.
+    """
+    teams_set = teams_df.team_name.unique()
+
+    for team_name in teams_set:
+        print(f"Processing team '{team_name}'")
+        delete_team(team_name)
 
 
 def delete_team(team_name):
@@ -73,9 +92,10 @@ def delete_team(team_name):
         try:
             api.teams.delete(team.id)
         except ApiError as e:
-            logging.error(f"Error deleting team {team_name}: {e}")
+            print(f"Error deleting team {team_name}: {e}")
     else:
-        logging.info(f"Team {team_name} not found.")
+        print(f"Team {team_name} not found.")
+
 
 def get_teams_membership(teams_list, filter=False):
     memberships = []
@@ -203,19 +223,20 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-tf", "--teams-file")
     parser.add_argument("-ct", "--create-teams", action="store_true")
-    parser.add_argument("-dt", "--delete-team")
+    parser.add_argument("-dt", "--delete-teams", action="store_true")
     parser.add_argument("-se", "--skip-email", action="store_false")
     parser.add_argument("--team-filter")
     options = parser.parse_args()
 
-    pprint(teams_by_name)
+    if options.teams_file:
+        teams_df = pd.read_csv(options.teams_file) 
+    
+        if options.create_teams:
+            logging.info("Creating Teams")
+            create_teams(teams_df, options.skip_email, options.team_filter)
 
-    if options.create_teams and options.teams_file:
-        logging.info("Creating Teams from file: {}".format(options.teams_file))
-        create_teams(options.teams_file, options.skip_email, options.team_filter)
-
-    if options.delete_team:
-        delete_team(options.delete_team)
+        if options.delete_teams:
+            delete_teams(teams_df)
 
     #await clean_msgs_rooms(rooms)
     

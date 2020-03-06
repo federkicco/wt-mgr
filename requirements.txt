@@ -1,2 +1,3 @@
 webexteamssdk
+pandas
 tabulate
