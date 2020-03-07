@@ -6,24 +6,28 @@ import re
 import os
 import asyncio
 from webexteamssdk import WebexTeamsAPI
-from webexteamssdk.exceptions import ApiError
+from webexteamssdk.exceptions import ApiError, AccessTokenError
 from distutils.util import strtobool
 from tabulate import tabulate
 try:
     import constants
 except ImportError:
-    pass
+    from wt_mgr import constants
 
 logger = logging.getLogger(__name__)
 logging.basicConfig()
 
-# init WT API connection
-api = WebexTeamsAPI()
-# pull all known teams and rooms
-all_teams = [ team for team in api.teams.list()]
-teams_by_id = { team.id: team.name for team in all_teams }
-teams_by_name = { team.name: team for team in all_teams }
-all_rooms = [ room for room in api.rooms.list() ]
+try:
+    # init WT API connection
+    api = WebexTeamsAPI()
+    # pull all known teams and rooms
+    all_teams = [ team for team in api.teams.list()]
+    teams_by_id = { team.id: team.name for team in all_teams }
+    teams_by_name = { team.name: team for team in all_teams }
+    all_rooms = [ room for room in api.rooms.list() ]
+except AccessTokenError as e:
+    logger.error(f"Failed to init WT API: {e}")
+    exit(1)
 
 
 def filter_df(df, options):
@@ -249,22 +253,23 @@ async def get_room_to_url_map(rooms_df):
 async def wt_mgr():
     parser = argparse.ArgumentParser()
     # paths and input files
-    parser.add_argument("-wd", "--work-dir", required=True)
-    parser.add_argument("-tf", "--teams-file")
-    parser.add_argument("-rf", "--rooms-file")
-    parser.add_argument("-tu", "--teams-users-file")
+    parser.add_argument("-wd", "--work-dir", required=True, help="Set work directory")
+    parser.add_argument("--init", action="store_true", help="Initialize work directory with CSV templates")
+    parser.add_argument("-tf", "--teams-file", help="Override the path or name of the Teams definition CSV file")
+    parser.add_argument("-rf", "--rooms-file", help="Override the path or name of the Rooms definition CSV file")
+    parser.add_argument("-tu", "--teams-users-file", help="Override the path or name of the Teams Users definition CSV file")
 
     # actions
-    parser.add_argument("-tc", "--create-teams", action="store_true")
-    parser.add_argument("-td", "--delete-teams", action="store_true")
-    parser.add_argument("-rc", "--create-rooms", action="store_true")
-    parser.add_argument("-rd", "--delete-rooms", action="store_true")
-    parser.add_argument("-ua", "--assign-users", action="store_true")
-    parser.add_argument("-ur", "--remove-users", action="store_true")
-    parser.add_argument("-gm", "--get-members", action="store_true")
-    parser.add_argument("-dm", "--dump-members", action="store_true")
-    parser.add_argument("-ea", "--add-eurl", action="store_true")
-    parser.add_argument("-er", "--remove-eurl", action="store_true")
+    parser.add_argument("-tc", "--create-teams", action="store_true", help="Create Teams as defined on CSV file")
+    parser.add_argument("-td", "--delete-teams", action="store_true", help="Delete Teams as defined on CSV file")
+    parser.add_argument("-rc", "--create-rooms", action="store_true", help="Create Rooms as defined on CSV file")
+    parser.add_argument("-rd", "--delete-rooms", action="store_true", help="Delete Rooms as defined on CSV file")
+    parser.add_argument("-ua", "--assign-users", action="store_true", help="Assign users to teams as defined on CSV file")
+    parser.add_argument("-ur", "--remove-users", action="store_true", help="Remove users from teams as defined on CSV file")
+    parser.add_argument("-gm", "--get-members", action="store_true", help="")
+    parser.add_argument("-dm", "--dump-members", action="store_true", help="")
+    parser.add_argument("-ea", "--add-eurl", action="store_true", help="Add the EURL bot to the Teams rooms")
+    parser.add_argument("-er", "--remove-eurl", action="store_true", help="Add the EURL bot to the Teams rooms")
     parser.add_argument("-du", "--dump-urls", action="store_true")
 
     # options
@@ -279,7 +284,12 @@ async def wt_mgr():
     options = parser.parse_args()
 
     # process the data dir and input config files
-    work_dir_override = options.work_dir and os.path.isdir(options.work_dir)
+    work_dir_override = os.path.isdir(options.work_dir) or options.init
+
+    if not work_dir_override and not options.init:
+        logger.error(f"Work directory {options.work_dir} doesn't exist: use --init to create and initialize the work directory.")
+        exit(1)
+
     # teams
     teams_dir, teams_file = os.path.split(options.teams_file or constants.FNAME_TEAMS)
     teams_file_path = os.path.join(options.work_dir if work_dir_override else teams_dir, teams_file)
@@ -289,6 +299,24 @@ async def wt_mgr():
     # teams_users
     teams_users_dir, teams_users_file = os.path.split(options.teams_users_file or constants.FNAME_TEAMS_USERS)
     teams_users_file_path = os.path.join(options.work_dir if work_dir_override else teams_dir, teams_users_file)
+
+    # Initialize work dir
+    if options.init:
+        config_files = {
+            teams_file_path: constants.SCHEMA_TEAMS,
+            rooms_file_path: constants.SCHEMA_ROOMS,
+            teams_users_file_path: constants.SCHEMA_TEAMS_USERS
+        }
+        logger.info(f"Initializing work dir: {options.work_dir}")
+        if not os.path.isdir(options.work_dir):
+            os.mkdir(options.work_dir)
+        for config_file, schema in config_files.items():
+            if not os.path.isfile(config_file):
+                logger.error(f"Creating file: {config_file}")
+                with open(config_file, "w") as cfile:
+                    csv_header = ",".join(schema)
+                    cfile.write(f"{csv_header}\n")
+        exit()
 
     # generate DFs out of lists and dicts
     all_teams_df = pd.DataFrame(
@@ -312,7 +340,7 @@ async def wt_mgr():
         ]
     )
 
-    print(all_rooms_df)
+    # print(all_rooms_df)
 
     # Teams
     if teams_file_path:
