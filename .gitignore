@@ -1,3 +1,6 @@
 creds.sh
 .vscode/*
 wt_mgr/__pycache__/*
+.eggs/*
+dist/*
+wt_mgr.egg-info/*

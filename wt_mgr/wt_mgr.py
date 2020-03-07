@@ -9,12 +9,13 @@ from webexteamssdk import WebexTeamsAPI
 from webexteamssdk.exceptions import ApiError
 from distutils.util import strtobool
 from tabulate import tabulate
-import constants
+try:
+    import constants
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 logging.basicConfig()
-
-logger.warning("Starting")
 
 # init WT API connection
 api = WebexTeamsAPI()
@@ -165,35 +166,31 @@ def dump_teams_membership(df, out_path, backup=True):
     return
 
 
-def add_eurl_to_rooms(rooms_df):
-    for room in rooms_df.iterrows():
-        room_name = room.room_name
-        team_name = room.team_name
-        print(f"Adding {constants.EURL_BOT_MAIL} to room: {room_name}")
-        # try:
-        #     api.memberships.create(room.id, personEmail=constants.EURL_BOT_MAIL, isModerator=True)
-        # except ApiError as e:
-        #     print(f"Error: {e}")
+def add_eurl_to_rooms(rooms_df, default_room_only=True, config_room=True):
+    # Keep only "General" room (room name == team name)
+    if default_room_only:
+        rooms_df = rooms_df[rooms_df.room_name == rooms_df.team_name]
 
-        for cmd in cmds:
-            print(f"Sending '{cmd}' to room: {room_name}")
-            try:
-                api.messages.create(room.id, markdown=f"<@personId:{constants.EURL_BOT_ID}|EURL> {msg}")
-            except ApiError as e:
-                print(f"Error: {e}")
+    for _, room in rooms_df.iterrows():
+        print(f"Adding {constants.EURL_BOT_MAIL} to room {room.room_name} in team {room.team_name}")
+        try:
+            api.memberships.create(room.room_id, personEmail=constants.EURL_BOT_MAIL, isModerator=True)
+        except ApiError as e:
+            print(f"Error: {e}")
 
-## old stuff below - review please
+        if config_room:
+            config_room_eurl(room)
+    return
+
 
 def config_room_eurl(room, cmds=["list off", "internal off", "url"]):
-        room_name = room.room_name
-        team_name = room.team_name
-
         for cmd in cmds:
-            print(f"Sending '{cmd}' to room: {room_name} in {team_name}")
+            print(f"Sending '{cmd}' to room: {room.room_name} in {room.team_name}")
             try:
-                api.messages.create(roomid, markdown=f"<@personId:{constants.EURL_BOT_ID}|EURL> {msg}")
+                api.messages.create(room.room_id, markdown=f"<@personId:{constants.EURL_BOT_ID}|EURL> {cmd}")
             except ApiError as e:
                 print(f"Error: {e}")
+        return
 
 
 async def clean_msgs_room(room, msg):
@@ -235,20 +232,21 @@ async def get_last_eurl_msg(room_id, wait=2):
     return
 
 
-async def get_room_to_url_map(rooms_list):
+async def get_room_to_url_map(rooms_df):
     url_maps = []
-    for room in rooms_list:
-        room_name = room.title
+    for _, room in rooms_df.iterrows():
         msg = f"<@personId:{constants.EURL_BOT_ID}|EURL> url"
-        await send_msg(room.id, msg)
-        last_response = await get_last_eurl_msg(room.id)
+        await send_msg(room.room_id, msg)
+        last_response = await get_last_eurl_msg(room.room_id)
         url = last_response[last_response.find("https"):]
-        url_maps.append({"room": room_name, "url": url})
+        url_maps.append({"room_name": room.room_name, "room_url": url})
 
-    return url_maps
+    url_maps_df = pd.DataFrame(url_maps)
+
+    return url_maps_df
 
 
-async def main():
+async def wt_mgr():
     parser = argparse.ArgumentParser()
     # paths and input files
     parser.add_argument("-wd", "--work-dir", required=True)
@@ -265,6 +263,9 @@ async def main():
     parser.add_argument("-ur", "--remove-users", action="store_true")
     parser.add_argument("-gm", "--get-members", action="store_true")
     parser.add_argument("-dm", "--dump-members", action="store_true")
+    parser.add_argument("-ea", "--add-eurl", action="store_true")
+    parser.add_argument("-er", "--remove-eurl", action="store_true")
+    parser.add_argument("-du", "--dump-urls", action="store_true")
 
     # options
     parser.add_argument("-ia", "--include-active", action="store_true")
@@ -289,11 +290,44 @@ async def main():
     teams_users_dir, teams_users_file = os.path.split(options.teams_users_file or constants.FNAME_TEAMS_USERS)
     teams_users_file_path = os.path.join(options.work_dir if work_dir_override else teams_dir, teams_users_file)
 
+    # generate DFs out of lists and dicts
+    all_teams_df = pd.DataFrame(
+        [
+            {
+            "team_name": team.name,
+            "team_id": team.id
+            }
+            for team in all_teams
+        ]
+    )
+
+    all_rooms_df = pd.DataFrame(
+        [
+            {
+                "room_name": room.title,
+                "room_id": room.id,
+                "team_id": room.teamId
+            }
+            for room in all_rooms
+        ]
+    )
+
+    print(all_rooms_df)
+
     # Teams
     if teams_file_path:
         teams_df = pd.read_csv(teams_file_path)
+
+        teams_df = pd.merge(
+            teams_df, all_teams_df, 
+            on="team_name",
+            how="left",
+            suffixes=("_old", "")
+            )
+        teams_df = teams_df.drop("team_id_old", axis=1)
+
         teams_df.is_active.fillna(value=False, inplace=True)
-        teams_df.team_id.fillna(value="", inplace=True)
+        # teams_df.team_id.fillna(value="", inplace=True)
         teams_df.team_description.fillna(value="", inplace=True)
 
         teams_df = filter_df(teams_df, options)
@@ -302,7 +336,7 @@ async def main():
             t_filter = "|".join(options.team_filter.split(","))
             teams_df = teams_df[teams_df.team_name.str.contains(t_filter)]
         
-        print(teams_df)
+        teams_df.drop_duplicates(inplace=True)
 
         teams_set = pd.Series(teams_df.team_name.unique()).to_list()
         teams_set_str = ",".join(teams_set)
@@ -326,7 +360,30 @@ async def main():
         rooms_df.team_name = rooms_df.team_name.str.split(",")
         rooms_df = rooms_df.explode("team_name")
 
+        # fill the "General" room name from team (CSV has a line with empty team and room names)
+        rooms_df.room_name.fillna(rooms_df.team_name, inplace=True)
+
+        # join with `teams_df` to populate `team_id`
+        rooms_df = pd.merge(
+            rooms_df, teams_df[["team_name", "team_id"]], 
+            on="team_name",
+            how="left",
+            suffixes=("_old", "")
+            )
+        rooms_df = rooms_df.drop("team_id_old", axis=1)
+
+        # join with `all_rooms_df` to populate `room_id`
+        rooms_df = pd.merge(
+            rooms_df, all_rooms_df[["room_name", "room_id", "team_id"]], 
+            on=["room_name", "team_id"],
+            how="left",
+            suffixes=("_old", "")
+            )
+        rooms_df = rooms_df.drop("room_id_old", axis=1)
+
         rooms_df = filter_df(rooms_df, options)
+
+        rooms_df.drop_duplicates(inplace=True)
 
         if options.team_filter:
             t_filter = "|".join(options.team_filter.split(","))
@@ -336,7 +393,7 @@ async def main():
             r_filter = "|".join(options.room_filter.split(","))
             rooms_df = rooms_df[rooms_df.room_name.str.contains(m_filter)]
 
-        print("Rooms config")
+        # print("Rooms config")
         print(rooms_df)
     
         if options.create_rooms:
@@ -354,7 +411,7 @@ async def main():
 
         teams_users_df = filter_df(teams_users_df, options)
 
-        print(teams_users_df)
+        teams_users_df.drop_duplicates(inplace=True)
 
         if options.assign_users:
             map_users_to_teams(teams_users_df)
@@ -366,14 +423,24 @@ async def main():
         if options.dump_members:
             dump_teams_membership(members_df, teams_users_file_path)
 
+    # Eurl
+    if options.add_eurl:
+        add_eurl_to_rooms(rooms_df)
+
+    if options.dump_urls:
+        url_map_df = await get_room_to_url_map(rooms_df)
+        print(url_map_df)
+
     #await clean_msgs_rooms(rooms)
     
-    # url_maps = await get_room_to_url_map(rooms)
-    # print(tabulate(sorted(url_maps, key = lambda i: i["room"]), headers="keys"))
-
     return
-        
-if __name__ == "__main__":
+
+
+def main():
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    loop.run_until_complete(wt_mgr())
+
+
+if __name__ == "__main__":
+    main()
     
