@@ -270,6 +270,11 @@ async def wt_mgr():
     parser.add_argument("-dm", "--dump-members", action="store_true", help="")
     parser.add_argument("-ea", "--add-eurl", action="store_true", help="Add the EURL bot to the Teams rooms")
     parser.add_argument("-er", "--remove-eurl", action="store_true", help="Add the EURL bot to the Teams rooms")
+
+    # show actions
+    parser.add_argument("-ts", "--show-teams", action="store_true", help="Show Teams")
+    parser.add_argument("-rs", "--show-rooms", action="store_true", help="Show Rooms")
+    parser.add_argument("-us", "--show-users", action="store_true", help="Show Users")
     parser.add_argument("-du", "--dump-urls", action="store_true")
 
     # options
