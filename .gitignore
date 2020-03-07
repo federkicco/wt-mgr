@@ -5,3 +5,4 @@ wt_mgr/__pycache__/*
 dist/*
 wt_mgr.egg-info/*
 mail/*
+build/*
